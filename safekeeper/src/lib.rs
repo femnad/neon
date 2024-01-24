@@ -31,6 +31,7 @@ pub mod safekeeper;
 pub mod send_wal;
 pub mod state;
 pub mod timeline;
+pub mod wal_backup_partial;
 pub mod wal_backup;
 pub mod wal_service;
 pub mod wal_storage;
@@ -78,6 +79,7 @@ pub struct SafeKeeperConf {
     pub pg_tenant_only_auth: Option<Arc<JwtAuth>>,
     pub http_auth: Option<Arc<SwappableJwtAuth>>,
     pub current_thread_runtime: bool,
+    pub partial_backup_enabled: bool,
 }
 
 impl SafeKeeperConf {
@@ -121,6 +123,7 @@ impl SafeKeeperConf {
             heartbeat_timeout: Duration::new(5, 0),
             max_offloader_lag_bytes: defaults::DEFAULT_MAX_OFFLOADER_LAG_BYTES,
             current_thread_runtime: false,
+            partial_backup_enabled: false,
         }
     }
 }

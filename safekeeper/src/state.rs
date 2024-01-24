@@ -11,8 +11,7 @@ use utils::{
 };
 
 use crate::{
-    control_file,
-    safekeeper::{AcceptorState, PersistedPeerInfo, PgUuid, ServerInfo, TermHistory},
+    control_file, safekeeper::{AcceptorState, PersistedPeerInfo, PgUuid, ServerInfo, TermHistory}, wal_backup_partial::{self, PartialRemoteSegment}
 };
 
 /// Persistent information stored on safekeeper node about timeline.
@@ -59,6 +58,8 @@ pub struct TimelinePersistentState {
     // obviously can be stale. (Currently not saved at all, but let's provision
     // place to have less file version upgrades).
     pub peers: PersistedPeers,
+    // TODO: write comment
+    pub partial_backup: wal_backup_partial::State,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -93,6 +94,7 @@ impl TimelinePersistentState {
                     .map(|p| (*p, PersistedPeerInfo::new()))
                     .collect(),
             ),
+            partial_backup: wal_backup_partial::State::default(),
         }
     }
 

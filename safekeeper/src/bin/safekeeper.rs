@@ -166,6 +166,7 @@ struct Args {
     /// useful for debugging.
     #[arg(long)]
     current_thread_runtime: bool,
+    // TODO: add a value for partial_backup_enabled
 }
 
 // Like PathBufValueParser, but allows empty string.
@@ -295,6 +296,7 @@ async fn main() -> anyhow::Result<()> {
         pg_tenant_only_auth,
         http_auth,
         current_thread_runtime: args.current_thread_runtime,
+        partial_backup_enabled: true,
     };
 
     // initialize sentry if SENTRY_DSN is provided
@@ -359,6 +361,8 @@ async fn start_safekeeper(conf: SafeKeeperConf) -> Result<()> {
     metrics::register_internal(Box::new(timeline_collector))?;
 
     let (wal_backup_launcher_tx, wal_backup_launcher_rx) = mpsc::channel(100);
+
+    wal_backup::init_remote_storage(&conf);
 
     // Keep handles to main tasks to die if any of them disappears.
     let mut tasks_handles: FuturesUnordered<BoxFuture<(String, JoinTaskRes)>> =

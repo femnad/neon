@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 
 use camino::{Utf8Path, Utf8PathBuf};
 use futures::stream::FuturesOrdered;
-use futures::StreamExt;
+use futures::{AsyncReadExt, StreamExt};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use utils::backoff;
@@ -179,6 +179,16 @@ fn get_configured_remote_storage() -> &'static GenericRemoteStorage {
         .unwrap()
 }
 
+pub fn init_remote_storage(conf: &SafeKeeperConf) {
+    // TODO: refactor REMOTE_STORAGE to avoid using global variables, and provide
+    // dependencies to all tasks instead.
+    REMOTE_STORAGE.get_or_init(|| {
+        conf.remote_storage.as_ref().map(|c| {
+            GenericRemoteStorage::from_config(c).expect("failed to create remote storage")
+        })
+    });
+}
+
 const CHECK_TASKS_INTERVAL_MSEC: u64 = 1000;
 
 /// Sits on wal_backup_launcher_rx and starts/stops per timeline wal backup
@@ -192,14 +202,6 @@ pub async fn wal_backup_launcher_task_main(
         "WAL backup launcher started, remote config {:?}",
         conf.remote_storage
     );
-
-    let conf_ = conf.clone();
-    REMOTE_STORAGE.get_or_init(|| {
-        conf_
-            .remote_storage
-            .as_ref()
-            .map(|c| GenericRemoteStorage::from_config(c).expect("failed to create remote storage"))
-    });
 
     // Presence in this map means launcher is aware s3 offloading is needed for
     // the timeline, but task is started only if it makes sense for to offload
@@ -497,7 +499,7 @@ fn get_segments(start: Lsn, end: Lsn, seg_size: usize) -> Vec<Segment> {
     res
 }
 
-async fn backup_object(
+pub async fn backup_object(
     source_file: &Utf8Path,
     target_file: &RemotePath,
     size: usize,
@@ -508,7 +510,10 @@ async fn backup_object(
         .await
         .with_context(|| format!("Failed to open file {source_file:?} for wal backup"))?;
 
-    let file = tokio_util::io::ReaderStream::with_capacity(file, BUFFER_SIZE);
+    // limiting the file to read only the first `size` bytes
+    let limited_file = tokio::io::AsyncReadExt::take(file, size as u64);
+
+    let file = tokio_util::io::ReaderStream::with_capacity(limited_file, BUFFER_SIZE);
 
     storage.upload_storage_object(file, size, target_file).await
 }
@@ -570,6 +575,12 @@ pub async fn delete_timeline(ttid: &TenantTimelineId) -> Result<()> {
     .await?;
 
     Ok(())
+}
+
+/// Used by wal_backup_partial.
+pub async fn delete_objects(paths: &[RemotePath]) -> Result<()> {
+    let storage = get_configured_remote_storage();
+    storage.delete_objects(paths).await
 }
 
 /// Copy segments from one timeline to another. Used in copy_timeline.

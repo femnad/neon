@@ -11,6 +11,7 @@ import toml
 from fixtures.log_helper import getLogger
 from fixtures.neon_fixtures import Endpoint, NeonEnv, NeonEnvBuilder, Safekeeper
 from fixtures.types import Lsn, TenantId, TimelineId
+from fixtures.remote_storage import RemoteStorageKind
 
 log = getLogger("root.safekeeper_async")
 
@@ -213,6 +214,7 @@ async def run_restarts_under_load(
 # Restart acceptors one by one, while executing and validating bank transactions
 def test_restarts_under_load(neon_env_builder: NeonEnvBuilder):
     neon_env_builder.num_safekeepers = 3
+    neon_env_builder.enable_safekeeper_remote_storage(RemoteStorageKind.LOCAL_FS)
     env = neon_env_builder.init_start()
 
     env.neon_cli.create_branch("test_safekeepers_restarts_under_load")
