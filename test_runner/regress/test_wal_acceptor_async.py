@@ -200,7 +200,8 @@ async def run_restarts_under_load(
         # assert that at least one transaction has completed in every worker
         stats.check_progress()
 
-        victim.start()
+        # testing #6530, temporary here
+        victim.start(extra_opts=["--partial-backup-enabled", "--partial-backup-timeout=2s"])
 
     log.info("Iterations are finished, exiting coroutines...")
     stats.running = False

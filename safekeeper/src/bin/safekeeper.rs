@@ -27,8 +27,7 @@ use utils::pid_file;
 
 use metrics::set_build_info_metric;
 use safekeeper::defaults::{
-    DEFAULT_HEARTBEAT_TIMEOUT, DEFAULT_HTTP_LISTEN_ADDR, DEFAULT_MAX_OFFLOADER_LAG_BYTES,
-    DEFAULT_PG_LISTEN_ADDR,
+    DEFAULT_HEARTBEAT_TIMEOUT, DEFAULT_HTTP_LISTEN_ADDR, DEFAULT_MAX_OFFLOADER_LAG_BYTES, DEFAULT_PARTIAL_BACKUP_TIMEOUT, DEFAULT_PG_LISTEN_ADDR
 };
 use safekeeper::wal_service;
 use safekeeper::GlobalTimelines;
@@ -166,7 +165,13 @@ struct Args {
     /// useful for debugging.
     #[arg(long)]
     current_thread_runtime: bool,
-    // TODO: add a value for partial_backup_enabled
+    /// Enable partial backup. If disabled, safekeeper will not upload partial
+    /// segments to remote storage.
+    #[arg(long)]
+    partial_backup_enabled: bool,
+    /// Controls how long backup will wait until uploading the partial segment.
+    #[arg(long, value_parser = humantime::parse_duration, default_value = DEFAULT_PARTIAL_BACKUP_TIMEOUT, verbatim_doc_comment)]
+    partial_backup_timeout: Duration,
 }
 
 // Like PathBufValueParser, but allows empty string.
@@ -296,7 +301,8 @@ async fn main() -> anyhow::Result<()> {
         pg_tenant_only_auth,
         http_auth,
         current_thread_runtime: args.current_thread_runtime,
-        partial_backup_enabled: true,
+        partial_backup_enabled: args.partial_backup_enabled,
+        partial_backup_timeout: args.partial_backup_timeout,
     };
 
     // initialize sentry if SENTRY_DSN is provided

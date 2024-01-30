@@ -49,6 +49,7 @@ pub mod defaults {
 
     pub const DEFAULT_HEARTBEAT_TIMEOUT: &str = "5000ms";
     pub const DEFAULT_MAX_OFFLOADER_LAG_BYTES: u64 = 128 * (1 << 20);
+    pub const DEFAULT_PARTIAL_BACKUP_TIMEOUT: &str = "15m";
 }
 
 #[derive(Debug, Clone)]
@@ -80,6 +81,7 @@ pub struct SafeKeeperConf {
     pub http_auth: Option<Arc<SwappableJwtAuth>>,
     pub current_thread_runtime: bool,
     pub partial_backup_enabled: bool,
+    pub partial_backup_timeout: Duration,
 }
 
 impl SafeKeeperConf {

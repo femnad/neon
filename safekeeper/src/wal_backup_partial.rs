@@ -66,8 +66,6 @@ impl State {
 struct PartialBackup {
     wal_seg_size: usize,
     tli: Arc<Timeline>,
-    commit_lsn_rx: tokio::sync::watch::Receiver<Lsn>,
-    flush_lsn_rx: tokio::sync::watch::Receiver<TermLsn>,
     conf: SafeKeeperConf,
     local_prefix: Utf8PathBuf,
     remote_prefix: Utf8PathBuf,
@@ -250,7 +248,7 @@ impl PartialBackup {
 #[instrument(name = "Partial backup", skip_all, fields(ttid = %tli.ttid))]
 pub async fn main_task(tli: Arc<Timeline>, conf: SafeKeeperConf) {
     debug!("started");
-    let await_duration = std::time::Duration::from_secs(5);
+    let await_duration = conf.partial_backup_timeout.clone();
 
     let mut cancellation_rx = match tli.get_cancellation_rx() {
         Ok(rx) => rx,
@@ -268,8 +266,8 @@ pub async fn main_task(tli: Arc<Timeline>, conf: SafeKeeperConf) {
     }
 
     let (_, persistent_state) = tli.get_state().await;
-    let commit_lsn_rx = tli.get_commit_lsn_watch_rx();
-    let flush_lsn_rx = tli.get_term_flush_lsn_watch_rx();
+    let mut commit_lsn_rx = tli.get_commit_lsn_watch_rx();
+    let mut flush_lsn_rx = tli.get_term_flush_lsn_watch_rx();
     let wal_seg_size = tli.get_wal_seg_size().await;
 
     let local_prefix = tli.timeline_dir.clone();
@@ -285,8 +283,6 @@ pub async fn main_task(tli: Arc<Timeline>, conf: SafeKeeperConf) {
         wal_seg_size,
         tli,
         state: persistent_state.partial_backup,
-        commit_lsn_rx,
-        flush_lsn_rx,
         conf,
         local_prefix,
         remote_prefix,
@@ -299,23 +295,23 @@ pub async fn main_task(tli: Arc<Timeline>, conf: SafeKeeperConf) {
         let uploaded_segment = backup.state.uploaded_segment();
         if let Some(seg) = &uploaded_segment {
             // if we already uploaded something, wait until we have something new
-            while backup.flush_lsn_rx.borrow().lsn == seg.flush_lsn
-                && *backup.commit_lsn_rx.borrow() == seg.commit_lsn
-                && backup.flush_lsn_rx.borrow().term == seg.term
+            while flush_lsn_rx.borrow().lsn == seg.flush_lsn
+                && *commit_lsn_rx.borrow() == seg.commit_lsn
+                && flush_lsn_rx.borrow().term == seg.term
             {
                 tokio::select! {
                     _ = cancellation_rx.changed() => {
                         info!("timeline canceled");
                         return;
                     }
-                    _ = backup.commit_lsn_rx.changed() => {}
-                    _ = backup.flush_lsn_rx.changed() => {}
+                    _ = commit_lsn_rx.changed() => {}
+                    _ = flush_lsn_rx.changed() => {}
                 }
             }
         }
 
         // fixing the segno and waiting some time to prevent reuploading the same segment too often
-        let pending_segno = backup.segno(backup.flush_lsn_rx.borrow().lsn);
+        let pending_segno = backup.segno(flush_lsn_rx.borrow().lsn);
         let timeout = tokio::time::sleep(await_duration);
         tokio::pin!(timeout);
         let mut timeout_expired = false;
@@ -326,9 +322,9 @@ pub async fn main_task(tli: Arc<Timeline>, conf: SafeKeeperConf) {
                     info!("timeline canceled");
                     return;
                 }
-                _ = backup.commit_lsn_rx.changed() => {}
-                _ = backup.flush_lsn_rx.changed() => {
-                    let segno = backup.segno(backup.flush_lsn_rx.borrow().lsn);
+                _ = commit_lsn_rx.changed() => {}
+                _ = flush_lsn_rx.changed() => {
+                    let segno = backup.segno(flush_lsn_rx.borrow().lsn);
                     if segno != pending_segno {
                         // previous segment is no longer partial, aborting the wait
                         break;
