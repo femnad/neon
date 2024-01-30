@@ -1,7 +1,6 @@
 use std::sync::Arc;
 
-
-use camino::{Utf8PathBuf};
+use camino::Utf8PathBuf;
 use postgres_ffi::{XLogFileName, XLogSegNo, PG_TLI};
 use rand::Rng;
 use remote_storage::RemotePath;
@@ -10,9 +9,10 @@ use tracing::{debug, info, instrument};
 use utils::lsn::Lsn;
 
 use crate::{
-    safekeeper::{Term, TermLsn},
+    safekeeper::Term,
     timeline::Timeline,
-    wal_backup::{self}, SafeKeeperConf,
+    wal_backup::{self},
+    SafeKeeperConf,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -45,13 +45,10 @@ impl PartialRemoteSegment {
 
 // NB: these structures are a part of a control_file, you can't change them without
 // changing the control file format version.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[derive(Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub struct State {
     pub segments: Vec<PartialRemoteSegment>,
 }
-
-
 
 impl State {
     /// Find an Uploaded segment. There should be only one Uploaded segment at a time.
@@ -248,7 +245,7 @@ impl PartialBackup {
 #[instrument(name = "Partial backup", skip_all, fields(ttid = %tli.ttid))]
 pub async fn main_task(tli: Arc<Timeline>, conf: SafeKeeperConf) {
     debug!("started");
-    let await_duration = conf.partial_backup_timeout.clone();
+    let await_duration = conf.partial_backup_timeout;
 
     let mut cancellation_rx = match tli.get_cancellation_rx() {
         Ok(rx) => rx,

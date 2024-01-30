@@ -126,6 +126,7 @@ impl SafeKeeperConf {
             max_offloader_lag_bytes: defaults::DEFAULT_MAX_OFFLOADER_LAG_BYTES,
             current_thread_runtime: false,
             partial_backup_enabled: false,
+            partial_backup_timeout: Duration::from_secs(0),
         }
     }
 }

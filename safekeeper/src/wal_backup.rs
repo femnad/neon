@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 
 use camino::{Utf8Path, Utf8PathBuf};
 use futures::stream::FuturesOrdered;
-use futures::{AsyncReadExt, StreamExt};
+use futures::StreamExt;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use utils::backoff;

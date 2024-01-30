@@ -55,12 +55,13 @@ pub struct TimelinePersistentState {
     /// pushed to s3. We don't remove WAL beyond it. Persisted only for
     /// informational purposes, we receive it from pageserver (or broker).
     pub remote_consistent_lsn: Lsn,
-    // Peers and their state as we remember it. Knowing peers themselves is
-    // fundamental; but state is saved here only for informational purposes and
-    // obviously can be stale. (Currently not saved at all, but let's provision
-    // place to have less file version upgrades).
+    /// Peers and their state as we remember it. Knowing peers themselves is
+    /// fundamental; but state is saved here only for informational purposes and
+    /// obviously can be stale. (Currently not saved at all, but let's provision
+    /// place to have less file version upgrades).
     pub peers: PersistedPeers,
-    // TODO: write comment
+    /// Holds names of partial segments uploaded to remote storage. Used to
+    /// clean up old objects without leaving garbage in remote storage.
     pub partial_backup: wal_backup_partial::State,
 }
 

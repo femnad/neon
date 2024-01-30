@@ -10,8 +10,8 @@ import pytest
 import toml
 from fixtures.log_helper import getLogger
 from fixtures.neon_fixtures import Endpoint, NeonEnv, NeonEnvBuilder, Safekeeper
-from fixtures.types import Lsn, TenantId, TimelineId
 from fixtures.remote_storage import RemoteStorageKind
+from fixtures.types import Lsn, TenantId, TimelineId
 
 log = getLogger("root.safekeeper_async")
 
