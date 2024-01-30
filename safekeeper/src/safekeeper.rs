@@ -1233,6 +1233,7 @@ mod tests {
                     commit_lsn: Lsn(1234567600),
                 },
             )]),
+            partial_backup: crate::wal_backup_partial::State::default(),
         };
 
         let ser = state.ser().unwrap();

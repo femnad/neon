@@ -183,9 +183,9 @@ pub fn init_remote_storage(conf: &SafeKeeperConf) {
     // TODO: refactor REMOTE_STORAGE to avoid using global variables, and provide
     // dependencies to all tasks instead.
     REMOTE_STORAGE.get_or_init(|| {
-        conf.remote_storage.as_ref().map(|c| {
-            GenericRemoteStorage::from_config(c).expect("failed to create remote storage")
-        })
+        conf.remote_storage
+            .as_ref()
+            .map(|c| GenericRemoteStorage::from_config(c).expect("failed to create remote storage"))
     });
 }
 

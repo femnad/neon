@@ -1,6 +1,8 @@
 //! Code to deal with safekeeper control file upgrades
 use crate::{
-    safekeeper::{AcceptorState, PgUuid, ServerInfo, Term, TermHistory, TermLsn}, state::{PersistedPeers, TimelinePersistentState}, wal_backup_partial
+    safekeeper::{AcceptorState, PgUuid, ServerInfo, Term, TermHistory, TermLsn},
+    state::{PersistedPeers, TimelinePersistentState},
+    wal_backup_partial,
 };
 use anyhow::{bail, Result};
 use pq_proto::SystemId;
@@ -309,7 +311,8 @@ pub fn upgrade_control_file(buf: &[u8], version: u32) -> Result<TimelinePersiste
         oldstate.server.pg_version = 140005;
 
         return Ok(oldstate);
-    } if version == 7 {
+    }
+    if version == 7 {
         info!("reading safekeeper control file version {}", version);
         let oldstate = SafeKeeperStateV7::des(&buf[..buf.len()])?;
 

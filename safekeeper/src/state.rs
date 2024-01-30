@@ -11,7 +11,9 @@ use utils::{
 };
 
 use crate::{
-    control_file, safekeeper::{AcceptorState, PersistedPeerInfo, PgUuid, ServerInfo, TermHistory}, wal_backup_partial::{self, PartialRemoteSegment}
+    control_file,
+    safekeeper::{AcceptorState, PersistedPeerInfo, PgUuid, ServerInfo, TermHistory},
+    wal_backup_partial::{self},
 };
 
 /// Persistent information stored on safekeeper node about timeline.
