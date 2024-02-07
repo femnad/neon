@@ -1,15 +1,20 @@
 use std::str::FromStr;
 
+use anyhow::Context;
 use clap::{Parser, Subcommand};
-use hyper::Method;
-use pageserver_client::mgmt_api::ResponseErrorMessageExt;
+use hyper::{Method, StatusCode};
+use pageserver_api::{
+    models::{ShardParameters, TenantConfig, TenantCreateRequest},
+    shard::TenantShardId,
+};
+use pageserver_client::mgmt_api::{self, ResponseErrorMessageExt};
 use reqwest::Url;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
-use utils::id::NodeId;
+use utils::id::{NodeId, TenantId};
 
 // TODO: de-duplicate struct definitions
 
-#[derive(Serialize, Deserialize, Clone, Copy)]
+#[derive(Serialize, Deserialize, Clone, Copy, Debug)]
 pub enum NodeAvailability {
     // Normal, happy state
     Active,
@@ -31,7 +36,7 @@ impl FromStr for NodeAvailability {
     }
 }
 
-#[derive(Serialize, Deserialize, Clone, Copy)]
+#[derive(Serialize, Deserialize, Clone, Copy, Debug)]
 pub enum NodeSchedulingPolicy {
     Active,
     Filling,
@@ -85,6 +90,16 @@ pub struct NodeConfigureRequest {
     pub scheduling: Option<NodeSchedulingPolicy>,
 }
 
+#[derive(Serialize, Deserialize)]
+pub(crate) struct NodePersistence {
+    pub(crate) node_id: i64,
+    pub(crate) scheduling_policy: String,
+    pub(crate) listen_http_addr: String,
+    pub(crate) listen_http_port: i32,
+    pub(crate) listen_pg_addr: String,
+    pub(crate) listen_pg_port: i32,
+}
+
 #[derive(Subcommand, Debug)]
 enum Command {
     NodeRegister {
@@ -101,6 +116,81 @@ enum Command {
         #[arg(long)]
         listen_http_port: u16,
     },
+    NodeConfigure {
+        #[arg(long)]
+        node_id: NodeId,
+
+        #[arg(long)]
+        availability: Option<NodeAvailability>,
+        #[arg(long)]
+        scheduling: Option<NodeSchedulingPolicy>,
+    },
+    Nodes {},
+    TenantCreate {
+        #[arg(long)]
+        tenant_id: TenantId,
+    },
+    TenantDelete {
+        #[arg(long)]
+        tenant_id: TenantId,
+    },
+    ServiceRegister {
+        #[arg(long)]
+        http_host: String,
+        #[arg(long)]
+        http_port: u16,
+        #[arg(long)]
+        region_id: String,
+        #[arg(long)]
+        availability_zone_id: String,
+        // {
+        //   "version": 1,
+        //   "host": "${HOST}",
+        //   "port": 6400,
+        //   "region_id": "{{ console_region_id }}",
+        //   "instance_id": "${INSTANCE_ID}",
+        //   "http_host": "${HOST}",
+        //   "http_port": 9898,
+        //   "active": false,
+        //   "availability_zone_id": "${AZ_ID}",
+        //   "disk_size": ${DISK_SIZE},
+        //   "instance_type": "${INSTANCE_TYPE}",
+        //   "register_reason" : "New pageserver"
+        // }
+    },
+}
+
+/// Request format for control plane POST /management/api/v2/pageservers
+///
+/// This is how physical pageservers register, but in this context it is how we
+/// register the storage controller with the control plane, as a "virtual pageserver"
+#[derive(Serialize, Deserialize, Debug)]
+struct ServiceRegisterRequest {
+    version: u16,
+    host: String,
+    port: u16,
+    /// This is the **Neon** region ID, which looks something like `aws-eu-west-1`
+    region_id: String,
+    /// This expects an EC2 instance ID, for bare metal pageservers.  But it can be any unique identifier.
+    instance_id: String,
+    http_host: String,
+    http_port: u16,
+    /// This is an EC2 AZ name (the ZoneName, not actually the AZ ID).  e.g. eu-west-1b
+    availability_zone_id: String,
+    disk_size: u64,
+    /// EC2 instance type.  If it doesn't make sense, leave it blank.
+    instance_type: String,
+    /// Freeform memo describing the request
+    register_reason: String,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+struct ServiceRegisterResponse {
+    // This is a partial representation of the management API's swagger `Pageserver` type.  Unused
+    // fields are ignored.
+    id: u64,
+    node_id: u64,
+    instance_id: String,
 }
 
 #[derive(Parser)]
@@ -140,7 +230,7 @@ impl Client {
         method: hyper::Method,
         path: String,
         body: Option<RQ>,
-    ) -> anyhow::Result<RS>
+    ) -> mgmt_api::Result<RS>
     where
         RQ: Serialize + Sized,
         RS: DeserializeOwned + Sized,
@@ -165,7 +255,7 @@ impl Client {
             );
         }
 
-        let response = builder.send().await?;
+        let response = builder.send().await.map_err(mgmt_api::Error::ReceiveBody)?;
         let response = response.error_from_body().await?;
 
         Ok(response
@@ -179,7 +269,11 @@ impl Client {
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
-    let client = Client::new(cli.api, cli.jwt);
+    let storcon_client = Client::new(cli.api.clone(), cli.jwt.clone());
+
+    let mut trimmed = cli.api.to_string();
+    trimmed.pop();
+    let vps_client = mgmt_api::Client::new(trimmed, cli.jwt.as_ref().map(|s| s.as_str()));
 
     match cli.command {
         Command::NodeRegister {
@@ -189,7 +283,7 @@ async fn main() -> anyhow::Result<()> {
             listen_http_addr,
             listen_http_port,
         } => {
-            client
+            storcon_client
                 .dispatch::<_, ()>(
                     Method::POST,
                     "control/v1/node".to_string(),
@@ -201,7 +295,117 @@ async fn main() -> anyhow::Result<()> {
                         listen_http_port,
                     }),
                 )
-                .await
+                .await?;
+        }
+        Command::TenantCreate { tenant_id } => {
+            vps_client
+                .tenant_create(&TenantCreateRequest {
+                    new_tenant_id: TenantShardId::unsharded(tenant_id),
+                    generation: None,
+                    shard_parameters: ShardParameters::default(),
+                    config: TenantConfig::default(),
+                })
+                .await?;
+        }
+        Command::TenantDelete { tenant_id } => {
+            let status = vps_client
+                .tenant_delete(TenantShardId::unsharded(tenant_id))
+                .await?;
+            tracing::info!("Delete status: {}", status);
+        }
+        Command::Nodes {} => {
+            let resp = storcon_client
+                .dispatch::<(), Vec<NodePersistence>>(
+                    Method::GET,
+                    "control/v1/node".to_string(),
+                    None,
+                )
+                .await?;
+            println!("{}", serde_json::to_string(&resp)?);
+        }
+        Command::NodeConfigure {
+            node_id,
+            availability,
+            scheduling,
+        } => {
+            let req = NodeConfigureRequest {
+                node_id,
+                availability,
+                scheduling,
+            };
+            storcon_client
+                .dispatch::<_, ()>(
+                    Method::PUT,
+                    format!("control/v1/node/{node_id}/config"),
+                    Some(req),
+                )
+                .await?;
+        }
+        Command::ServiceRegister {
+            http_host,
+            http_port,
+            region_id,
+            availability_zone_id,
+        } => {
+            let instance_id = http_host.clone();
+            let req = ServiceRegisterRequest {
+                instance_id: instance_id.clone(),
+                // We do not expose postgres protocol, but provide a valid-looking host/port for it
+                host: http_host.clone(),
+                port: 6400,
+                http_host: http_host.clone(),
+                http_port,
+                version: 1,
+                region_id,
+                availability_zone_id: availability_zone_id,
+                disk_size: 0,
+                instance_type: "".to_string(),
+                register_reason: "Storage Controller Virtual Pageserver".to_string(),
+            };
+
+            // curl -sf \
+            //   -X POST \
+            //   -H "Content-Type: application/json" \
+            //   -H "Authorization: Bearer {{ controlplane_token.for_deploy | default('') }}" \
+            //   {{ console_mgmt_base_url }}/management/api/v2/pageservers \
+            //   -d@/tmp/payload \
+
+            // let existing_pageserver = storcon_client
+            //     .dispatch::<(), ServiceRegisterResponse>(
+            //         Method::GET,
+            //         format!("/management/api/v2/pageservers/{instance_id}"),
+            //         None,
+            //     )
+            //     .await;
+            // match existing_pageserver {
+            //     Ok(existing) => {
+            //         eprintln!(
+            //             "Already registered {} with id={} node_id=>{}",
+            //             instance_id, existing.id, existing.node_id
+            //         );
+            //         return Ok(());
+            //     }
+            //     Err(mgmt_api::Error::ApiError(StatusCode::NOT_FOUND, _)) => {
+            //         eprintln!("Not already registered, registering now...");
+            //     }
+            //     Err(e) => return Err(e.into()),
+            // }
+
+            eprintln!("Body:\n{}\n", serde_json::to_string(&req).unwrap());
+
+            let response = storcon_client
+                .dispatch::<ServiceRegisterRequest, ServiceRegisterResponse>(
+                    Method::POST,
+                    "management/api/v2/pageservers".to_string(),
+                    Some(req),
+                )
+                .await?;
+            eprintln!(
+                "Registered {} as id={} node_id={}",
+                http_host, response.id, response.node_id
+            );
         }
     }
+
+    Ok(())
 }

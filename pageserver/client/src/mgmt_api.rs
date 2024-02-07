@@ -40,12 +40,20 @@ impl ResponseErrorMessageExt for reqwest::Response {
         }
 
         let url = self.url().to_owned();
-        Err(match self.json::<HttpErrorBody>().await {
-            Ok(HttpErrorBody { msg }) => Error::ApiError(status, msg),
-            Err(_) => {
-                Error::ReceiveErrorBody(format!("Http error ({}) at {}.", status.as_u16(), url))
-            }
-        })
+
+        let raw_body = self.bytes().await.unwrap();
+        eprintln!(
+            "Error body: {}",
+            String::from_utf8(raw_body.to_vec()).unwrap()
+        );
+        Err(Error::ApiError(
+            status,
+            format!(
+                "Http error ({}) at {} (bad response body).",
+                status.as_u16(),
+                url
+            ),
+        ))
     }
 }
 
