@@ -71,8 +71,8 @@ from fixtures.utils import (
     ATTACHMENT_NAME_REGEX,
     allure_add_grafana_links,
     allure_attach_from_dir,
+    assert_no_errors,
     get_self_dir,
-    scan_log_for_errors,
     subprocess_capture,
     wait_until,
 )
@@ -923,6 +923,8 @@ class NeonEnvBuilder:
 
             for pageserver in self.env.pageservers:
                 pageserver.assert_no_errors()
+
+            self.env.attachment_service.assert_no_errors()
 
         try:
             self.overlay_cleanup_teardown()
@@ -1919,6 +1921,7 @@ class NeonAttachmentService:
         self.env = env
         self.running = False
         self.auth_enabled = auth_enabled
+        self.allowed_errors: list[str] = []
 
     def start(self):
         assert not self.running
@@ -1931,6 +1934,11 @@ class NeonAttachmentService:
             self.env.neon_cli.attachment_service_stop(immediate)
             self.running = False
         return self
+
+    def assert_no_errors(self):
+        assert_no_errors(
+            self.env.repo_dir / "attachment_service.log", "attachment_service", self.allowed_errors
+        )
 
     def pageserver_api(self) -> PageserverHttpClient:
         """
@@ -2242,18 +2250,9 @@ class NeonPageserver(PgProtocol):
         return self.env.repo_dir / f"pageserver_{self.id}"
 
     def assert_no_errors(self):
-        logfile = self.workdir / "pageserver.log"
-        if not logfile.exists():
-            log.warning(f"Skipping log check: {logfile} does not exist")
-            return
-
-        with logfile.open("r") as f:
-            errors = scan_log_for_errors(f, self.allowed_errors)
-
-        for _lineno, error in errors:
-            log.info(f"not allowed error: {error.strip()}")
-
-        assert not errors
+        assert_no_errors(
+            self.workdir / "pageserver.log", f"pageserver_{self.id}", self.allowed_errors
+        )
 
     def assert_no_metric_errors(self):
         """

@@ -453,3 +453,17 @@ def scan_log_for_errors(input: Iterable[str], allowed_errors: List[str]) -> List
             else:
                 errors.append((lineno, line))
     return errors
+
+
+def assert_no_errors(log_file, service, allowed_errors):
+    if not log_file.exists():
+        log.warning(f"Skipping {service} log check: {log_file} does not exist")
+        return
+
+    with log_file.open("r") as f:
+        errors = scan_log_for_errors(f, allowed_errors)
+
+    for _lineno, error in errors:
+        log.info(f"not allowed {service} error: {error.strip()}")
+
+    assert not errors
