@@ -192,7 +192,6 @@ _PG_init(void)
 		PGC_POSTMASTER,
 		0,
 		NULL, NULL, NULL);
-	);
 	/*
 	 * Important: This must happen after other parts of the extension are
 	 * loaded, otherwise any settings to GUCs that were set before the
