@@ -646,6 +646,9 @@ typedef struct WalProposer
 	/* WAL has been generated up to this point */
 	XLogRecPtr	availableLsn;
 
+	/* cached GetAcknowledgedByQuorumWALPosition result */
+	XLogRecPtr	commitLsn;
+
 	/* last commitLsn broadcasted to safekeepers */
 	XLogRecPtr	lastSentCommitLsn;
 

@@ -2452,6 +2452,20 @@ class PgBin:
         )
         return base_path
 
+    def get_pg_controldata_checkpoint_lsn(self, pgdata: str) -> Lsn:
+        """
+        Run pg_controldata on given datadir and extract checkpoint lsn.
+        """
+
+        pg_controldata_path = os.path.join(self.pg_bin_path, "pg_controldata")
+        cmd = f"{pg_controldata_path} -D {pgdata}"
+        result = subprocess.run(cmd, capture_output=True, text=True, shell=True)
+        checkpoint_lsn = re.findall(
+            "Latest checkpoint location:\\s+([0-9A-F]+/[0-9A-F]+)", result.stdout
+        )[0]
+        log.info(f"last checkpoint at {checkpoint_lsn}")
+        return Lsn(checkpoint_lsn)
+
 
 @pytest.fixture(scope="function")
 def pg_bin(test_output_dir: Path, pg_distrib_dir: Path, pg_version: PgVersion) -> PgBin:

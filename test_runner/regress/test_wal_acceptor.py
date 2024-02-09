@@ -1347,6 +1347,36 @@ def test_peer_recovery(neon_env_builder: NeonEnvBuilder):
     endpoint.safe_psql("insert into t select generate_series(1,100), 'payload'")
 
 
+# Test that when compute is terminated in fast (or smart) mode, walproposer is
+# allowed to run and self terminate after shutdown checkpoint is written, so it
+# commits it to safekeepers before exiting. This not required for correctness,
+# but needed for tests using check_restored_datadir_content.
+def test_wp_graceful_shutdown(neon_env_builder: NeonEnvBuilder, pg_bin: PgBin):
+    neon_env_builder.num_safekeepers = 1
+    env = neon_env_builder.init_start()
+
+    tenant_id = env.initial_tenant
+    timeline_id = env.neon_cli.create_branch("test_wp_graceful_shutdown")
+    ep = env.endpoints.create_start("test_wp_graceful_shutdown")
+    ep.safe_psql("create table t(key int, value text)")
+    ep.stop()
+
+    # figure out checkpoint lsn
+    ckpt_lsn = pg_bin.get_pg_controldata_checkpoint_lsn(ep.pg_data_dir_path())
+
+    sk_http_cli = env.safekeepers[0].http_client()
+    commit_lsn = sk_http_cli.timeline_status(tenant_id, timeline_id).commit_lsn
+    # Note: this is in memory value. Graceful shutdown of walproposer currently
+    # doesn't guarantee persisted value, which is ok as we need it only for
+    # tests. Persisting it without risking too many cf flushes needs a wp -> sk
+    # protocol change. (though in reality shutdown sync-safekeepers does flush
+    # of cf, so most of the time persisted value wouldn't lag)
+    log.info(f"sk commit_lsn {commit_lsn}")
+    # note that ckpt_lsn is the *beginning* of checkpoint record, so commit_lsn
+    # must be actually higher
+    assert commit_lsn > ckpt_lsn, "safekeeper must have checkpoint record"
+
+
 class SafekeeperEnv:
     def __init__(
         self,
