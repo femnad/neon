@@ -1,34 +1,10 @@
 #! /usr/bin/env python3
 
 import argparse
-import re
 import sys
-from typing import Iterable, List, Tuple
+from typing import List
 
-
-def scan_pageserver_log_for_errors(
-    input: Iterable[str], allowed_errors: List[str]
-) -> List[Tuple[int, str]]:
-    error_or_warn = re.compile(r"\s(ERROR|WARN)")
-    errors = []
-    for lineno, line in enumerate(input, start=1):
-        if len(line) == 0:
-            continue
-
-        if error_or_warn.search(line):
-            # Is this a torn log line?  This happens when force-killing a process and restarting
-            # Example: "2023-10-25T09:38:31.752314Z  WARN deletion executo2023-10-25T09:38:31.875947Z  INFO version: git-env:0f9452f76e8ccdfc88291bccb3f53e3016f40192"
-            if re.match("\\d{4}-\\d{2}-\\d{2}T.+\\d{4}-\\d{2}-\\d{2}T.+INFO version.+", line):
-                continue
-
-            # It's an ERROR or WARN. Is it in the allow-list?
-            for a in allowed_errors:
-                if re.match(a, line):
-                    break
-            else:
-                errors.append((lineno, line))
-    return errors
-
+from fixtures.utils import scan_log_for_errors
 
 DEFAULT_PAGESERVER_ALLOWED_ERRORS = (
     # All tests print these, when starting up or shutting down
@@ -92,7 +68,7 @@ def _check_allowed_errors(input):
     # difficulty of copypasting regexes as arguments without any quoting
     # errors.
 
-    errors = scan_pageserver_log_for_errors(input, allowed_errors)
+    errors = scan_log_for_errors(input, allowed_errors)
 
     for lineno, error in errors:
         print(f"-:{lineno}: {error.strip()}", file=sys.stderr)

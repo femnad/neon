@@ -48,7 +48,6 @@ from fixtures.broker import NeonBroker
 from fixtures.log_helper import log
 from fixtures.pageserver.allowed_errors import (
     DEFAULT_PAGESERVER_ALLOWED_ERRORS,
-    scan_pageserver_log_for_errors,
 )
 from fixtures.pageserver.http import PageserverHttpClient
 from fixtures.pageserver.types import IndexPartDump
@@ -73,6 +72,7 @@ from fixtures.utils import (
     allure_add_grafana_links,
     allure_attach_from_dir,
     get_self_dir,
+    scan_log_for_errors,
     subprocess_capture,
     wait_until,
 )
@@ -2248,7 +2248,7 @@ class NeonPageserver(PgProtocol):
             return
 
         with logfile.open("r") as f:
-            errors = scan_pageserver_log_for_errors(f, self.allowed_errors)
+            errors = scan_log_for_errors(f, self.allowed_errors)
 
         for _lineno, error in errors:
             log.info(f"not allowed error: {error.strip()}")
