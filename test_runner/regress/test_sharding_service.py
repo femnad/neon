@@ -139,6 +139,13 @@ def test_node_status_after_restart(
     assert len(nodes) == 2
 
     env.pageservers[1].stop()
+    env.attachment_service.allowed_errors.extend(
+        [
+            ".*Could not contact pageserver.*",
+            ".*Location config listing .*failed.*",
+            ".*Could not contact pageserver.*",
+        ]
+    )
 
     env.attachment_service.stop()
     env.attachment_service.start()
