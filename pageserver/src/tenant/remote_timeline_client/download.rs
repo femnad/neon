@@ -36,12 +36,40 @@ use super::{
     INITDB_PATH,
 };
 
+pub async fn download_layer_file<'a>(
+    conf: &'static PageServerConf,
+    storage: &'a GenericRemoteStorage,
+    tenant_shard_id: TenantShardId,
+    timeline_id: TimelineId,
+    layer_file_name: &'a LayerFileName,
+    layer_metadata: &'a LayerFileMetadata,
+    cancel: &CancellationToken,
+) -> Result<u64, DownloadError> {
+    match crate::virtual_file::io_engine::get() {
+        crate::virtual_file::io_engine::IoEngine::NotSet => panic!("unset"),
+        crate::virtual_file::io_engine::IoEngine::StdFs => {
+            download_layer_file_legacy(
+                conf,
+                storage,
+                tenant_shard_id,
+                timeline_id,
+                layer_file_name,
+                layer_metadata,
+                cancel,
+            )
+            .await
+        }
+        #[cfg(target_os = "linux")]
+        crate::virtual_file::io_engine::IoEngine::TokioEpollUring => todo!(),
+    }
+}
+
 ///
 /// If 'metadata' is given, we will validate that the downloaded file's size matches that
 /// in the metadata. (In the future, we might do more cross-checks, like CRC validation)
 ///
 /// Returns the size of the downloaded file.
-pub async fn download_layer_file<'a>(
+async fn download_layer_file_legacy<'a>(
     conf: &'static PageServerConf,
     storage: &'a GenericRemoteStorage,
     tenant_shard_id: TenantShardId,
