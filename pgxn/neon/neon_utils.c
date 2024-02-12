@@ -1,5 +1,5 @@
-
 #include <sys/resource.h>
+#include <curl/curl.h>
 
 #include "postgres.h"
 
@@ -113,4 +113,45 @@ disable_core_dump()
 
 		fprintf(stderr, "WARNING: disable cores setrlimit failed: %s", strerror(save_errno));
 	}
+}
+
+/*
+ * On macOS with a libcurl that has IPv6 support, curl_global_init() calls
+ * SCDynamicStoreCopyProxies(), which makes the program multithreaded. An ideal
+ * place to call curl_global_init() would be _PG_init(), but Neon has to be
+ * added to shared_preload_libraries, which are loaded in the Postmaster
+ * process. The Postmaster is not supposed to become multithreaded at any point
+ * in its lifecycle. Postgres doesn't have any good hook that I know of to
+ * initialize per-backend structures, so we have to check this on any
+ * allocation of a CURL handle.
+ *
+ * Free the allocated CURL handle with curl_free(3).
+ *
+ * https://developer.apple.com/documentation/systemconfiguration/1517088-scdynamicstorecopyproxies
+ */
+CURL *
+alloc_curl_handle(void)
+{
+	static bool curl_initialized = false;
+
+	CURL *handle;
+
+	if (unlikely(!curl_initialized))
+	{
+		/* Protected by mutex internally */
+		if (curl_global_init(CURL_GLOBAL_DEFAULT))
+		{
+			elog(ERROR, "Failed to initialize curl");
+		}
+
+		curl_initialized = true;
+	}
+
+	handle = curl_easy_init();
+	if (handle == NULL)
+	{
+		elog(ERROR, "Failed to initialize curl handle");
+	}
+
+	return handle;
 }
