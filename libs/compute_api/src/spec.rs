@@ -82,8 +82,8 @@ pub struct ComputeSpec {
 
     // When we are starting a new replica in hot standby mode,
     // we need to know if the primary is running.
-    // This is used to determine if we should try to pull SLRU from primary
-    // or not.
+    // This is used to determine if replica should wait for
+    // RUNNING_XACTS from primary or not.
     pub primary_is_running: Option<bool>,
 }
 
