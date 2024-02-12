@@ -10,6 +10,7 @@ use utils::id::TimelineId;
 
 
 mod legacy;
+mod tokio_epoll_uring;
 
 pub async fn download_layer_file<'a>(
     conf: &'static PageServerConf,
@@ -36,19 +37,17 @@ pub async fn download_layer_file<'a>(
         }
         #[cfg(target_os = "linux")]
         crate::virtual_file::io_engine::IoEngine::TokioEpollUring => {
-            todo!()
-            // download_layer_file_tokio_epoll_uring(
-            //     conf,
-            //     storage,
-            //     tenant_shard_id,
-            //     timeline_id,
-            //     layer_file_name,
-            //     layer_metadata,
-            //     cancel,
-            // )
-            // .await
+            tokio_epoll_uring::download_layer_file_legacy(
+                conf,
+                storage,
+                tenant_shard_id,
+                timeline_id,
+                layer_file_name,
+                layer_metadata,
+                cancel,
+            )
+            .await
         }
     }
 }
 
-mod legacy;
