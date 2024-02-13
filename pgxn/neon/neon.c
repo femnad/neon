@@ -38,6 +38,7 @@ PG_MODULE_MAGIC;
 void		_PG_init(void);
 
 static int	logical_replication_max_time_lag = 3600;
+static int	logical_replication_max_snap_files = 300;
 
 static void
 InitLogicalReplicationMonitor(void)
@@ -45,14 +46,24 @@ InitLogicalReplicationMonitor(void)
 	BackgroundWorker bgw;
 
 	DefineCustomIntVariable(
-		"neon.logical_replication_max_time_lag",
-		"Threshold for dropping unused logical replication slots",
-		NULL,
-		&logical_replication_max_time_lag,
-		3600, 0, INT_MAX,
-		PGC_SIGHUP,
-		GUC_UNIT_S,
-		NULL, NULL, NULL);
+							"neon.logical_replication_max_time_lag",
+							"Threshold for dropping unused logical replication slots",
+							NULL,
+							&logical_replication_max_time_lag,
+							3600, 0, INT_MAX,
+							PGC_SIGHUP,
+							GUC_UNIT_S,
+							NULL, NULL, NULL);
+
+	DefineCustomIntVariable(
+							"neon.logical_replication_max_snap_files",
+							"Maximum allowed logical replication .snap files",
+							NULL,
+							&logical_replication_max_snap_files,
+							300, 0, INT_MAX,
+							PGC_SIGHUP,
+							0,
+							NULL, NULL, NULL);
 
 	memset(&bgw, 0, sizeof(bgw));
 	bgw.bgw_flags = BGWORKER_SHMEM_ACCESS;
@@ -70,11 +81,32 @@ InitLogicalReplicationMonitor(void)
 
 typedef struct
 {
-	NameData    name;
-	bool        dropped;
-	XLogRecPtr  confirmed_flush_lsn;
+	NameData	name;
+	bool		dropped;
+	XLogRecPtr	confirmed_flush_lsn;
 	TimestampTz last_updated;
 } SlotStatus;
+
+/* Calculate .snap files. */
+static int
+get_num_snap_files(void)
+{
+	DIR		   *dirdesc;
+	struct dirent *de;
+	char	   *snap_path = "pg_logical/snapshots/";
+	int			cnt = 0;
+
+	dirdesc = AllocateDir(snap_path);
+	while ((de = ReadDir(dirdesc, snap_path)) != NULL)
+	{
+		if (strcmp(de->d_name, ".") == 0 ||
+			strcmp(de->d_name, "..") == 0)
+			continue;
+		cnt++;
+	}
+	FreeDir(dirdesc);
+	return cnt;
+}
 
 /*
  * Unused logical replication slots pins WAL and prevents deletion of snapshots.
@@ -82,8 +114,9 @@ typedef struct
 PGDLLEXPORT void
 LogicalSlotsMonitorMain(Datum main_arg)
 {
-	SlotStatus* slots;
-	TimestampTz now, last_checked;
+	SlotStatus *slots;
+	TimestampTz now,
+				last_checked;
 
 	/* Establish signal handlers. */
 	pqsignal(SIGUSR1, procsignal_sigusr1_handler);
@@ -92,23 +125,26 @@ LogicalSlotsMonitorMain(Datum main_arg)
 
 	BackgroundWorkerUnblockSignals();
 
-	slots = (SlotStatus*)calloc(max_replication_slots, sizeof(SlotStatus));
+	slots = (SlotStatus *) calloc(max_replication_slots, sizeof(SlotStatus));
 	last_checked = GetCurrentTimestamp();
 
 	for (;;)
 	{
+		int			num_snap_files;
+
 		(void) WaitLatch(MyLatch,
 						 WL_LATCH_SET | WL_EXIT_ON_PM_DEATH | WL_TIMEOUT,
-						 logical_replication_max_time_lag*1000/2,
+						 10000,
 						 PG_WAIT_EXTENSION);
 		ResetLatch(MyLatch);
 		CHECK_FOR_INTERRUPTS();
 
 		now = GetCurrentTimestamp();
 
-		if (now - last_checked > logical_replication_max_time_lag*USECS_PER_SEC)
+		if (now - last_checked > logical_replication_max_time_lag * USECS_PER_SEC)
 		{
-			int n_active_slots = 0;
+			int			n_active_slots = 0;
+
 			last_checked = now;
 
 			LWLockAcquire(ReplicationSlotControlLock, LW_SHARED);
@@ -126,13 +162,16 @@ LogicalSlotsMonitorMain(Datum main_arg)
 					continue;
 				}
 
-				/* Check if there was some activity with the slot since last check */
+				/*
+				 * Check if there was some activity with the slot since last
+				 * check
+				 */
 				if (s->data.confirmed_flush != slots[i].confirmed_flush_lsn)
 				{
 					slots[i].confirmed_flush_lsn = s->data.confirmed_flush;
 					slots[i].last_updated = now;
 				}
-				else if (now - slots[i].last_updated > logical_replication_max_time_lag*USECS_PER_SEC)
+				else if (now - slots[i].last_updated > logical_replication_max_time_lag * USECS_PER_SEC)
 				{
 					slots[i].name = s->data.name;
 					slots[i].dropped = true;
@@ -141,8 +180,8 @@ LogicalSlotsMonitorMain(Datum main_arg)
 			LWLockRelease(ReplicationSlotControlLock);
 
 			/*
-			 * If there are no active subscriptions, then no new snapshots are generated
-			 * and so no need to force slot deletion.
+			 * If there are no active subscriptions, then no new snapshots are
+			 * generated and so no need to force slot deletion.
 			 */
 			if (n_active_slots != 0)
 			{
@@ -151,9 +190,83 @@ LogicalSlotsMonitorMain(Datum main_arg)
 					if (slots[i].dropped)
 					{
 						elog(LOG, "Drop logical replication slot because it was not update more than %ld seconds",
-							 (now - slots[i].last_updated)/USECS_PER_SEC);
+							 (now - slots[i].last_updated) / USECS_PER_SEC);
 						ReplicationSlotDrop(slots[i].name.data, true);
 						slots[i].dropped = false;
+					}
+				}
+			}
+		}
+
+		/*
+		 * If there are too many .snap files, just drop all logical slots to
+		 * prevent aux files bloat.
+		 */
+		num_snap_files = get_num_snap_files();
+		if (num_snap_files > logical_replication_max_snap_files)
+		{
+			elog(LOG, "ls_monitor: dropping all logical slots: found %d .snap files, limit is %d",
+				 num_snap_files, logical_replication_max_snap_files);
+			for (int i = 0; i < max_replication_slots; i++)
+			{
+				char		slot_name[NAMEDATALEN];
+				ReplicationSlot *s = &ReplicationSlotCtl->replication_slots[i];
+
+				/* find the name */
+				LWLockAcquire(ReplicationSlotControlLock, LW_SHARED);
+				/* Consider only logical repliction slots */
+				if (!s->in_use || !SlotIsLogical(s))
+				{
+					LWLockRelease(ReplicationSlotControlLock);
+					continue;
+				}
+
+				strlcpy(slot_name, s->data.name.data, NAMEDATALEN);
+				elog(LOG, "ls_monitor: dropping slot %s", slot_name);
+				LWLockRelease(ReplicationSlotControlLock);
+
+				/* now try to drop it, killing owner before f any */
+				for (;;)
+				{
+					pid_t		active_pid;
+
+					SpinLockAcquire(&s->mutex);
+					active_pid = s->active_pid;
+					SpinLockRelease(&s->mutex);
+
+					if (active_pid == 0)
+					{
+						/*
+						 * Slot is releasted, try to drop it. Though of course
+						 * it could have been reacquired, so drop can ERROR
+						 * out. Similarly it could have been dropped in the
+						 * meanwhile.
+						 *
+						 * In principle we could remove pg_try/pg_catch, that
+						 * would restart the whole bgworker.
+						 */
+						ConditionVariableCancelSleep();
+						PG_TRY();
+						{
+							ReplicationSlotDrop(slot_name, true);
+							elog(LOG, "ls_monitor: slot %s dropped", slot_name);
+						}
+						PG_CATCH();
+						{
+							EmitErrorReport();
+							FlushErrorState();
+							elog(LOG, "ls_monitor: failed to drop slot %s", slot_name);
+						}
+						PG_END_TRY();
+						break;
+					}
+					else
+					{
+						/* kill the owner and wait for release */
+						elog(LOG, "ls_monitor: killing slot %s owner %d", slot_name, active_pid);
+						(void) kill(active_pid, SIGTERM);
+						/* We shouldn't get stuck, but to be safe add timeout. */
+						ConditionVariableTimedSleep(&s->active_cv, 1000, WAIT_EVENT_REPLICATION_SLOT_DROP);
 					}
 				}
 			}
