@@ -116,6 +116,9 @@ pub struct SharedState {
     /// when tli is inactive instead of having this flag.
     active: bool,
     last_removed_segno: XLogSegNo,
+    /// True if local and remote deletion has been done, allows to skip visiting
+    /// s3 on retries.
+    deleted: bool,
 }
 
 impl SharedState {
@@ -155,6 +158,7 @@ impl SharedState {
             wal_backup_active: false,
             active: false,
             last_removed_segno: 0,
+            deleted: false,
         })
     }
 
@@ -174,6 +178,7 @@ impl SharedState {
             wal_backup_active: false,
             active: false,
             last_removed_segno: 0,
+            deleted: false,
         })
     }
 
@@ -482,21 +487,28 @@ impl Timeline {
         shared_state: &mut MutexGuard<'_, SharedState>,
         only_local: bool,
     ) -> Result<(bool, bool)> {
-        let was_active = shared_state.active;
-        self.cancel(shared_state);
+        if !shared_state.deleted {
+            let was_active = shared_state.active;
+            self.cancel(shared_state);
 
-        // TODO: It's better to wait for s3 offloader termination before
-        // removing data from s3. Though since s3 doesn't have transactions it
-        // still wouldn't guarantee absense of data after removal.
-        let conf = GlobalTimelines::get_global_config();
-        if !only_local && conf.is_wal_backup_enabled() {
-            // Note: we concurrently delete remote storage data from multiple
-            // safekeepers. That's ok, s3 replies 200 if object doesn't exist and we
-            // do some retries anyway.
-            wal_backup::delete_timeline(&self.ttid).await?;
+            // TODO: It's better to wait for s3 offloader termination before
+            // removing data from s3. Though since s3 doesn't have transactions it
+            // still wouldn't guarantee absense of data after removal.
+            let conf = GlobalTimelines::get_global_config();
+            if !only_local && conf.is_wal_backup_enabled() {
+                // Note: we concurrently delete remote storage data from multiple
+                // safekeepers. That's ok, s3 replies 200 if object doesn't exist and we
+                // do some retries anyway.
+                wal_backup::delete_timeline(&self.ttid).await?;
+            }
+            let dir_existed = delete_dir(&self.timeline_dir).await?;
+            if !only_local {
+                shared_state.deleted = true;
+            }
+            Ok((dir_existed, was_active))
+        } else {
+            Ok((false, false))
         }
-        let dir_existed = delete_dir(&self.timeline_dir).await?;
-        Ok((dir_existed, was_active))
     }
 
     /// Cancel timeline to prevent further usage. Background tasks will stop
