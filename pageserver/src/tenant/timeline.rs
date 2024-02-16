@@ -22,7 +22,7 @@ use pageserver_api::{
         LayerMapInfo, TimelineState,
     },
     reltag::BlockNumber,
-    shard::{ShardIdentity, TenantShardId},
+    shard::{ShardCount, ShardIdentity, TenantShardId},
 };
 use rand::Rng;
 use serde_with::serde_as;
@@ -2813,7 +2813,13 @@ impl Timeline {
 
             // If our layer flushes didn't carry disk_consistent_lsn up to the `to_lsn` advertised
             // to us via layer_flush_start_rx, then advance it here.
-            if flushed_to_lsn < frozen_to_lsn {
+            //
+            // This path is only taken for tenants with multiple shards: single sharded tenants should
+            // never encounter a gap in the wal.
+            debug_assert!(
+                self.shard_identity.count > ShardCount(1) || flushed_to_lsn >= frozen_to_lsn
+            );
+            if flushed_to_lsn < frozen_to_lsn && self.shard_identity.count > ShardCount(1) {
                 let old_disk_consistent_lsn = self.disk_consistent_lsn.load();
                 tracing::info!("Advancing disk_consistent_lsn across layer gap {old_disk_consistent_lsn}->{frozen_to_lsn}");
                 if frozen_to_lsn > old_disk_consistent_lsn {
