@@ -280,7 +280,7 @@ pub struct Timeline {
     /// The value is a counter, incremented every time a new flush cycle is requested.
     /// The flush cycle counter is sent back on the layer_flush_done channel when
     /// the flush finishes. You can use that to wait for the flush to finish.
-    layer_flush_start_tx: tokio::sync::watch::Sender<u64>,
+    layer_flush_start_tx: tokio::sync::watch::Sender<(u64, Lsn)>,
     /// to be notified when layer flushing has finished, subscribe to the layer_flush_done channel
     layer_flush_done_tx: tokio::sync::watch::Sender<(u64, Result<(), FlushLayerError>)>,
 
@@ -891,8 +891,8 @@ impl Timeline {
     /// Flush to disk all data that was written with the put_* functions
     #[instrument(skip(self), fields(tenant_id=%self.tenant_shard_id.tenant_id, shard_id=%self.tenant_shard_id.shard_slug(), timeline_id=%self.timeline_id))]
     pub(crate) async fn freeze_and_flush(&self) -> anyhow::Result<()> {
-        self.freeze_inmem_layer(false).await;
-        self.flush_frozen_layers_and_wait().await
+        let to_lsn = self.freeze_inmem_layer(false).await;
+        self.flush_frozen_layers_and_wait(to_lsn).await
     }
 
     /// Outermost timeline compaction operation; downloads needed layers.
@@ -1449,7 +1449,7 @@ impl Timeline {
         let disk_consistent_lsn = metadata.disk_consistent_lsn();
         let (state, _) = watch::channel(state);
 
-        let (layer_flush_start_tx, _) = tokio::sync::watch::channel(0);
+        let (layer_flush_start_tx, _) = tokio::sync::watch::channel((0, disk_consistent_lsn));
         let (layer_flush_done_tx, _) = tokio::sync::watch::channel((0, Ok(())));
 
         let tenant_conf_guard = tenant_conf.read().unwrap();
@@ -2725,12 +2725,15 @@ impl Timeline {
 
     pub(crate) fn finish_write(&self, new_lsn: Lsn) {
         assert!(new_lsn.is_aligned());
+        tracing::info!("finish_write: {new_lsn}");
 
         self.metrics.last_record_gauge.set(new_lsn.0 as i64);
         self.last_record_lsn.advance(new_lsn);
     }
 
-    async fn freeze_inmem_layer(&self, write_lock_held: bool) {
+    /// Whether there was a layer to freeze or not, return the value of get_last_record_lsn
+    /// before we attempted the freeze: this guarantees that ingested data is frozen up to this lsn.
+    async fn freeze_inmem_layer(&self, write_lock_held: bool) -> Lsn {
         // Freeze the current open in-memory layer. It will be written to disk on next
         // iteration.
         let _write_guard = if write_lock_held {
@@ -2739,15 +2742,18 @@ impl Timeline {
             Some(self.write_lock.lock().await)
         };
         let mut guard = self.layers.write().await;
+        let to_lsn = self.get_last_record_lsn();
         guard
-            .try_freeze_in_memory_layer(self.get_last_record_lsn(), &self.last_freeze_at)
+            .try_freeze_in_memory_layer(to_lsn, &self.last_freeze_at)
             .await;
+
+        to_lsn
     }
 
     /// Layer flusher task's main loop.
     async fn flush_loop(
         self: &Arc<Self>,
-        mut layer_flush_start_rx: tokio::sync::watch::Receiver<u64>,
+        mut layer_flush_start_rx: tokio::sync::watch::Receiver<(u64, Lsn)>,
         ctx: &RequestContext,
     ) {
         info!("started flush loop");
@@ -2766,7 +2772,11 @@ impl Timeline {
 
             trace!("waking up");
             let timer = self.metrics.flush_time_histo.start_timer();
-            let flush_counter = *layer_flush_start_rx.borrow();
+            let (flush_counter, frozen_to_lsn) = *layer_flush_start_rx.borrow();
+
+            // The highest LSN to which we flushed in the loop over frozen layers
+            let mut flushed_to_lsn = Lsn(0);
+
             let result = loop {
                 if self.cancel.is_cancelled() {
                     info!("dropping out of flush loop for timeline shutdown");
@@ -2785,7 +2795,9 @@ impl Timeline {
                     break Ok(());
                 };
                 match self.flush_frozen_layer(layer_to_flush, ctx).await {
-                    Ok(()) => {}
+                    Ok(this_layer_to_lsn) => {
+                        flushed_to_lsn = std::cmp::max(flushed_to_lsn, this_layer_to_lsn);
+                    }
                     Err(FlushLayerError::Cancelled) => {
                         info!("dropping out of flush loop for timeline shutdown");
                         return;
@@ -2794,10 +2806,24 @@ impl Timeline {
                         FlushLayerError::Other(_) | FlushLayerError::CreateImageLayersError(_),
                     ) => {
                         error!("could not flush frozen layer: {err:?}");
-                        break err;
+                        break err.map(|_| ());
                     }
                 }
             };
+
+            // If our layer flushes didn't carry disk_consistent_lsn up to the `to_lsn` advertised
+            // to us via layer_flush_start_rx, then advance it here.
+            if flushed_to_lsn < frozen_to_lsn {
+                let old_disk_consistent_lsn = self.disk_consistent_lsn.load();
+                tracing::info!("Advancing disk_consistent_lsn across layer gap {old_disk_consistent_lsn}->{frozen_to_lsn}");
+                if frozen_to_lsn > old_disk_consistent_lsn {
+                    self.disk_consistent_lsn.store(frozen_to_lsn);
+                    if let Err(e) = self.schedule_uploads(frozen_to_lsn, vec![]) {
+                        tracing::warn!("Failed to schedule metadata upload after updating disk_consistent_lsn: {e}");
+                    }
+                }
+            }
+
             // Notify any listeners that we're done
             let _ = self
                 .layer_flush_done_tx
@@ -2807,7 +2833,7 @@ impl Timeline {
         }
     }
 
-    async fn flush_frozen_layers_and_wait(&self) -> anyhow::Result<()> {
+    async fn flush_frozen_layers_and_wait(&self, to_lsn: Lsn) -> anyhow::Result<()> {
         let mut rx = self.layer_flush_done_tx.subscribe();
 
         // Increment the flush cycle counter and wake up the flush task.
@@ -2821,9 +2847,10 @@ impl Timeline {
             anyhow::bail!("cannot flush frozen layers when flush_loop is not running, state is {flush_loop_state:?}")
         }
 
-        self.layer_flush_start_tx.send_modify(|counter| {
+        self.layer_flush_start_tx.send_modify(|(counter, lsn)| {
             my_flush_request = *counter + 1;
             *counter = my_flush_request;
+            *lsn = to_lsn;
         });
 
         loop {
@@ -2860,16 +2887,22 @@ impl Timeline {
     }
 
     fn flush_frozen_layers(&self) {
-        self.layer_flush_start_tx.send_modify(|val| *val += 1);
+        self.layer_flush_start_tx.send_modify(|(counter, lsn)| {
+            *counter += 1;
+
+            *lsn = std::cmp::max(*lsn, Lsn(self.last_freeze_at.load().0 - 1));
+        });
     }
 
     /// Flush one frozen in-memory layer to disk, as a new delta layer.
+    ///
+    /// Return value is the last lsn (inclusive) of the layer that was frozen.
     #[instrument(skip_all, fields(layer=%frozen_layer))]
     async fn flush_frozen_layer(
         self: &Arc<Self>,
         frozen_layer: Arc<InMemoryLayer>,
         ctx: &RequestContext,
-    ) -> Result<(), FlushLayerError> {
+    ) -> Result<Lsn, FlushLayerError> {
         debug_assert_current_span_has_tenant_and_timeline_id();
         // As a special case, when we have just imported an image into the repository,
         // instead of writing out a L0 delta layer, we directly write out image layer
@@ -2942,7 +2975,13 @@ impl Timeline {
             return Err(FlushLayerError::Cancelled);
         }
 
+        tracing::info!(
+            "flush_frozen_layer: lsn range {}-{}",
+            lsn_range.start,
+            lsn_range.end
+        );
         let disk_consistent_lsn = Lsn(lsn_range.end.0 - 1);
+        tracing::info!("flush_frozen_layer: update disk_consistent_lsn to {disk_consistent_lsn}");
         let old_disk_consistent_lsn = self.disk_consistent_lsn.load();
 
         // The new on-disk layers are now in the layer map. We can remove the
@@ -2995,7 +3034,7 @@ impl Timeline {
             .await
             .context("save_metadata")?;
         }
-        Ok(())
+        Ok(Lsn(lsn_range.end.0 - 1))
     }
 
     /// Update metadata file
