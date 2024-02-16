@@ -651,6 +651,7 @@ impl Endpoint {
                             );
                         }
                         ComputeStatus::Empty
+                        | ComputeStatus::Upgrading
                         | ComputeStatus::ConfigurationPending
                         | ComputeStatus::Configuration => {
                             bail!("unexpected compute status: {:?}", state.status)

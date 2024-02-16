@@ -48,6 +48,8 @@ pub enum ComputeStatus {
     Running,
     // New spec is being applied.
     Configuration,
+    // Compute is upgrading Postgres.
+    Upgrading,
     // Either startup or configuration failed,
     // compute will exit soon or is waiting for
     // control-plane to terminate it.

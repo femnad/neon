@@ -6,6 +6,7 @@ use std::sync::Arc;
 use std::thread;
 
 use crate::compute::{ComputeNode, ComputeState, ParsedSpec};
+use crate::http::upgrade;
 use compute_api::requests::ConfigurationRequest;
 use compute_api::responses::{ComputeStatus, ComputeStatusResponse, GenericAPIError};
 
@@ -119,6 +120,20 @@ async fn routes(req: Request<Body>, compute: &Arc<ComputeNode>) -> Response<Body
                 Err((msg, code)) => {
                     error!("error handling /configure request: {msg}");
                     render_json_error(&msg, code)
+                }
+            }
+        }
+
+        (&Method::POST, "/upgrade") => {
+            info!("serving /upgrade POST request");
+            match upgrade::handle(req, compute).await {
+                Ok(_) => Response::builder()
+                    .status(StatusCode::ACCEPTED)
+                    .body(Body::from("Starting upgrade"))
+                    .unwrap(),
+                Err((e, status)) => {
+                    error!("error handling /upgrade request: {e}");
+                    render_json_error(&format!("{}", e), status)
                 }
             }
         }
