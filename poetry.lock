@@ -1910,6 +1910,20 @@ pytest = [
 ]
 
 [[package]]
+name = "pytest-repeat"
+version = "0.9.3"
+description = "pytest plugin for repeating tests"
+optional = false
+python-versions = ">=3.7"
+files = [
+    {file = "pytest_repeat-0.9.3-py3-none-any.whl", hash = "sha256:26ab2df18226af9d5ce441c858f273121e92ff55f5bb311d25755b8d7abdd8ed"},
+    {file = "pytest_repeat-0.9.3.tar.gz", hash = "sha256:ffd3836dfcd67bb270bec648b330e20be37d2966448c4148c4092d1e8aba8185"},
+]
+
+[package.dependencies]
+pytest = "*"
+
+[[package]]
 name = "pytest-rerunfailures"
 version = "13.0"
 description = "pytest plugin to re-run tests to eliminate flaky failures"
@@ -2667,4 +2681,4 @@ cffi = ["cffi (>=1.11)"]
 [metadata]
 lock-version = "2.0"
 python-versions = "^3.9"
-content-hash = "6f988c68b183cf4258112579b0946d40003f1f3025cc91f28cc6dcefc9d98198"
+content-hash = "9cb0e26c45e44957aa444c5ce5925d8073470a15bac5b4496287a72cf924012f"
